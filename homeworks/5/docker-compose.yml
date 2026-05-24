@@ -1,0 +1,101 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: analytics
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    networks:
+      - analytics
+
+  minio:
+    image: minio/minio
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: username
+      MINIO_ROOT_PASSWORD: password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - analytics
+
+  minio-init:
+    image: minio/mc
+    container_name: minio-init
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set local http://minio:9000 username password;
+      mc mb -p local/raw;
+      mc mb -p local/processed;
+      mc mb -p local/marts;
+      exit 0;
+      "
+    networks:
+      - analytics
+
+  jupyter:
+    build:
+      context: ./jupyter
+    container_name: jupyter
+    environment:
+      JUPYTER_TOKEN: analytics
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/home/jovyan/work
+    networks:
+      - analytics
+    depends_on:
+      - postgres
+      - minio
+
+  superset:
+    build:
+      context: ./superset
+    container_name: superset
+    environment:
+      SUPERSET_SECRET_KEY: "supersecretkey"
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_FIRST_NAME: Admin
+      ADMIN_LAST_NAME: User
+    ports:
+      - "8088:8088"
+    volumes:
+      - superset_home:/app/superset_home
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py
+    command: >
+      /bin/sh -c "
+      python -m pip install psycopg2-binary &&
+      superset db upgrade &&
+      superset fab create-admin --username admin --firstname Admin --lastname User --email admin@example.com --password admin || true &&
+      superset init &&
+      superset run -h 0.0.0.0 -p 8088
+      "
+    networks:
+      - analytics
+    depends_on:
+      - postgres
+
+volumes:
+  postgres_data:
+  minio_data:
+  superset_home:
+
+networks:
+  analytics:
+    driver: bridge
